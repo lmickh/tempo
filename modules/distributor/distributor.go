@@ -121,8 +121,9 @@ type Distributor struct {
 	traceEncoder    model.SegmentDecoder
 
 	// search
-	searchEnabled    bool
-	globalTagsToDrop map[string]struct{}
+	searchEnabled     bool
+	globalTagsToAllow map[string]struct{}
+	globalTagsToDrop  map[string]struct{}
 
 	// metrics-generator
 	metricsGeneratorEnabled bool
@@ -197,7 +198,11 @@ func New(cfg Config, clientCfg ingester_client.Config, ingestersRing ring.ReadRi
 		subservices = append(subservices, generatorsPool)
 	}
 
-	// turn list into map for efficient checking
+	// turn lists into maps for efficient checking
+	tagsToAllow := map[string]struct{}{}
+	for _, tag := range cfg.SearchTagsAllowList {
+		tagsToAllow[tag] = struct{}{}
+	}
 	tagsToDrop := map[string]struct{}{}
 	for _, tag := range cfg.SearchTagsDenyList {
 		tagsToDrop[tag] = struct{}{}
@@ -215,6 +220,7 @@ func New(cfg Config, clientCfg ingester_client.Config, ingestersRing ring.ReadRi
 		generatorClientCfg:      generatorClientCfg,
 		generatorsRing:          generatorsRing,
 		generatorsPool:          generatorsPool,
+		globalTagsToAllow:       tagsToAllow,
 		globalTagsToDrop:        tagsToDrop,
 		overrides:               o,
 		traceEncoder:            model.MustNewSegmentDecoder(model.CurrentEncoding),
@@ -317,6 +323,14 @@ func (d *Distributor) PushBatches(ctx context.Context, batches []*v1.ResourceSpa
 	if d.searchEnabled {
 		perTenantAllowedTags := d.overrides.SearchTagsAllowList(userID)
 		searchData = extractSearchDataAll(rebatchedTraces, func(tag string) bool {
+			// if global allow list, extract
+			if len(d.globalTagsToAllow) != 0 {
+				if _, ok := d.globalTagsToAllow[tag]; ok {
+					return true
+				}
+				// drop otherwise
+				return false
+			}
 			// if in per tenant override, extract
 			if _, ok := perTenantAllowedTags[tag]; ok {
 				return true
